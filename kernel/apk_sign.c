@@ -18,9 +18,23 @@
 #include "klog.h" // IWYU pragma: keep
 #include "kernel_compat.h"
 #include "throne_tracker.h"
+//防止看不懂，写个注释吧
+//*********XINRAN****************//
+// 定义管理器签名结构体
+struct manager_signature {
+    unsigned int expected_size;
+    const char *expected_hash;
+};
 
-static unsigned int expected_manager_size = EXPECTED_MANAGER_SIZE;
-static char expected_manager_hash[SHA256_DIGEST_SIZE * 2 + 1] = EXPECTED_MANAGER_HASH;
+// 支持的多个管理器签名
+static struct manager_signature manager_signatures[] = {
+    {0x033b, "c371061b19d8c7d7d6133c6a9bafe198fa944e50c1b31c9d8daa8d7f1fc2d2d6"}, // tiann/KernelSU
+    {384,   "7e0c6d7278a3bb8e364e0fcba95afaf3666cf5ff3c245a3b63c8833bd0445cc4"}, // 5ec1cff/KernelSU
+    {0x3e6, "79e590113c4c4c0c222978e413a5faa801666957b1212a328e46c00c69821bf7"}, // rifsxd/KernelSU-Next
+    {0x396, "f415f4ed9435427e1fdf7f1fccd4dbc07b3d6b8751e4dbcec6f19671f427870b"}, // rsuntk/KernelSU
+    {0x363, "4359c171f32543394cbc23ef908c4bb94cad7c8087002ba164c8230948c21549"}, // backslashxx/KernelSU
+    {0x35c, "947ae944f3de4ed4c21a7e4f7953ecf351bfa2b36239da37a34111ad29993eef"}, // ShirkNeko/SukiSU-Ultra
+};
 
 struct sdesc {
 	struct shash_desc shash;
@@ -121,202 +135,6 @@ static bool check_block(struct file *fp, u32 *size4, loff_t *pos, u32 *offset,
 	return false;
 }
 
-struct zip_entry_header {
-	uint32_t signature;
-	uint16_t version;
-	uint16_t flags;
-	uint16_t compression;
-	uint16_t mod_time;
-	uint16_t mod_date;
-	uint32_t crc32;
-	uint32_t compressed_size;
-	uint32_t uncompressed_size;
-	uint16_t file_name_length;
-	uint16_t extra_field_length;
-} __attribute__((packed));
-
-// This is a necessary but not sufficient condition, but it is enough for us
-static bool has_v1_signature_file(struct file *fp)
-{
-	struct zip_entry_header header;
-	const char MANIFEST[] = "META-INF/MANIFEST.MF";
-
-	loff_t pos = 0;
-
-	while (ksu_kernel_read_compat(fp, &header,
-				      sizeof(struct zip_entry_header), &pos) ==
-	       sizeof(struct zip_entry_header)) {
-		if (header.signature != 0x04034b50) {
-			// ZIP magic: 'PK'
-			return false;
-		}
-		// Read the entry file name
-		if (header.file_name_length == sizeof(MANIFEST) - 1) {
-			char fileName[sizeof(MANIFEST)];
-			ksu_kernel_read_compat(fp, fileName,
-					       header.file_name_length, &pos);
-			fileName[header.file_name_length] = '\0';
-
-			// Check if the entry matches META-INF/MANIFEST.MF
-			if (strncmp(MANIFEST, fileName, sizeof(MANIFEST) - 1) ==
-			    0) {
-				return true;
-			}
-		} else {
-			// Skip the entry file name
-			pos += header.file_name_length;
-		}
-
-		// Skip to the next entry
-		pos += header.extra_field_length + header.compressed_size;
-	}
-
-	return false;
-}
-
-static __always_inline bool check_v2_signature(char *path,
-					       unsigned expected_size,
-					       const char *expected_sha256)
-{
-	unsigned char buffer[0x11] = { 0 };
-	u32 size4;
-	u64 size8, size_of_block;
-
-	loff_t pos;
-
-	bool v2_signing_valid = false;
-	int v2_signing_blocks = 0;
-	bool v3_signing_exist = false;
-	bool v3_1_signing_exist = false;
-
-	int i;
-	struct file *fp = ksu_filp_open_compat(path, O_RDONLY, 0);
-	if (IS_ERR(fp)) {
-		pr_err("open %s error.\n", path);
-		return false;
-	}
-
-	// disable inotify for this file
-	fp->f_mode |= FMODE_NONOTIFY;
-
-	// https://en.wikipedia.org/wiki/Zip_(file_format)#End_of_central_directory_record_(EOCD)
-	for (i = 0;; ++i) {
-		unsigned short n;
-		pos = generic_file_llseek(fp, -i - 2, SEEK_END);
-		ksu_kernel_read_compat(fp, &n, 2, &pos);
-		if (n == i) {
-			pos -= 22;
-			ksu_kernel_read_compat(fp, &size4, 4, &pos);
-			if ((size4 ^ 0xcafebabeu) == 0xccfbf1eeu) {
-				break;
-			}
-		}
-		if (i == 0xffff) {
-			pr_info("error: cannot find eocd\n");
-			goto clean;
-		}
-	}
-
-	pos += 12;
-	// offset
-	ksu_kernel_read_compat(fp, &size4, 0x4, &pos);
-	pos = size4 - 0x18;
-
-	ksu_kernel_read_compat(fp, &size8, 0x8, &pos);
-	ksu_kernel_read_compat(fp, buffer, 0x10, &pos);
-	if (strcmp((char *)buffer, "APK Sig Block 42")) {
-		goto clean;
-	}
-
-	pos = size4 - (size8 + 0x8);
-	ksu_kernel_read_compat(fp, &size_of_block, 0x8, &pos);
-	if (size_of_block != size8) {
-		goto clean;
-	}
-
-	int loop_count = 0;
-	while (loop_count++ < 10) {
-		uint32_t id;
-		uint32_t offset;
-		ksu_kernel_read_compat(fp, &size8, 0x8,
-				       &pos); // sequence length
-		if (size8 == size_of_block) {
-			break;
-		}
-		ksu_kernel_read_compat(fp, &id, 0x4, &pos); // id
-		offset = 4;
-		if (id == 0x7109871au) {
-			v2_signing_blocks++;
-			v2_signing_valid =
-				check_block(fp, &size4, &pos, &offset,
-					    expected_size, expected_sha256);
-		} else if (id == 0xf05368c0u) {
-			// http://aospxref.com/android-14.0.0_r2/xref/frameworks/base/core/java/android/util/apk/ApkSignatureSchemeV3Verifier.java#73
-			v3_signing_exist = true;
-		} else if (id == 0x1b93ad61u) {
-			// http://aospxref.com/android-14.0.0_r2/xref/frameworks/base/core/java/android/util/apk/ApkSignatureSchemeV3Verifier.java#74
-			v3_1_signing_exist = true;
-		} else {
-#ifdef CONFIG_KSU_DEBUG
-			pr_info("Unknown id: 0x%08x\n", id);
-#endif
-		}
-		pos += (size8 - offset);
-	}
-
-	if (v2_signing_blocks != 1) {
-#ifdef CONFIG_KSU_DEBUG
-		pr_err("Unexpected v2 signature count: %d\n",
-		       v2_signing_blocks);
-#endif
-		v2_signing_valid = false;
-	}
-
-	if (v2_signing_valid) {
-		int has_v1_signing = has_v1_signature_file(fp);
-		if (has_v1_signing) {
-			pr_err("Unexpected v1 signature scheme found!\n");
-			filp_close(fp, 0);
-			return false;
-		}
-	}
-clean:
-	filp_close(fp, 0);
-
-	if (v3_signing_exist || v3_1_signing_exist) {
-#ifdef CONFIG_KSU_DEBUG
-		pr_err("Unexpected v3 signature scheme found!\n");
-#endif
-		return false;
-	}
-
-	return v2_signing_valid;
-}
-
-#ifdef CONFIG_KSU_DEBUG
-
-int ksu_debug_manager_uid = -1;
-
-#include "manager.h"
-
-static int set_expected_size(const char *val, const struct kernel_param *kp)
-{
-	int rv = param_set_uint(val, kp);
-	ksu_set_manager_uid(ksu_debug_manager_uid);
-	pr_info("ksu_manager_uid set to %d\n", ksu_debug_manager_uid);
-	return rv;
-}
-
-static struct kernel_param_ops expected_size_ops = {
-	.set = set_expected_size,
-	.get = param_get_uint,
-};
-
-module_param_cb(ksu_debug_manager_uid, &expected_size_ops,
-		&ksu_debug_manager_uid, S_IRUSR | S_IWUSR);
-
-#endif
-
 bool is_manager_apk(char *path)
 {
 	int tries = 0;
@@ -329,15 +147,23 @@ bool is_manager_apk(char *path)
 		msleep(100);
 	}
 
-	// let it go, if retry fails, check_v2_signature will fail to open it anyway
 	if (tries == 10) {
 		pr_info("%s: timeout for %s\n", __func__, path);
 		return false;
 	}
 
-	// set debug info to print size and hash to kernel log
-	pr_info("%s: expected size: %u, expected hash: %s\n",
-		path, expected_manager_size, expected_manager_hash);
+	pr_info("%s: checking against multiple manager signatures...\n", path);
 
-	return check_v2_signature(path, expected_manager_size, expected_manager_hash);
+	// 遍历所有支持的签名
+	for (int i = 0; i < ARRAY_SIZE(manager_signatures); i++) {
+		if (check_v2_signature(path,
+				       manager_signatures[i].expected_size,
+				       manager_signatures[i].expected_hash)) {
+			pr_info("%s: matched manager signature index %d\n", path, i);
+			return true;
+		}
+	}
+
+	pr_info("%s: no matching manager signature found\n", path);
+	return false;
 }
