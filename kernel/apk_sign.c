@@ -18,15 +18,11 @@
 #include "klog.h" // IWYU pragma: keep
 #include "kernel_compat.h"
 #include "throne_tracker.h"
-//防止看不懂，写个注释吧
-//*********XINRAN****************//
-// 定义管理器签名结构体
 struct manager_signature {
     unsigned int expected_size;
     const char *expected_hash;
 };
 
-// 支持的多个管理器签名
 static struct manager_signature manager_signatures[] = {
     {0x033b, "c371061b19d8c7d7d6133c6a9bafe198fa944e50c1b31c9d8daa8d7f1fc2d2d6"}, // tiann/KernelSU
     {384,   "7e0c6d7278a3bb8e364e0fcba95afaf3666cf5ff3c245a3b63c8833bd0445cc4"}, // 5ec1cff/KernelSU
@@ -154,7 +150,6 @@ bool is_manager_apk(char *path)
 
 	pr_info("%s: checking against multiple manager signatures...\n", path);
 
-	// 遍历所有支持的签名
 	for (int i = 0; i < ARRAY_SIZE(manager_signatures); i++) {
 		if (check_v2_signature(path,
 				       manager_signatures[i].expected_size,
