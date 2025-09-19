@@ -27,37 +27,37 @@ initialize_variables() {
 
 # Reverts modifications made by this script
 perform_cleanup() {
-    echo "[+] 清理集成..."
-    [ -L "$DRIVER_DIR/kernelsu" ] && rm "$DRIVER_DIR/kernelsu" && echo "[-] 还原修改的符号链接..."
-    grep -q "kernelsu" "$DRIVER_MAKEFILE" && sed -i '/kernelsu/d' "$DRIVER_MAKEFILE" && echo "[-] 还原修改的 Makefile..."
-    grep -q "drivers/kernelsu/Kconfig" "$DRIVER_KCONFIG" && sed -i '/drivers\/kernelsu\/Kconfig/d' "$DRIVER_KCONFIG" && echo "[-] 还原修改的 Kconfig..."
+    echo "[+] Cleaning up..."
+    [ -L "$DRIVER_DIR/kernelsu" ] && rm "$DRIVER_DIR/kernelsu" && echo "[-] Symlink removed."
+    grep -q "kernelsu" "$DRIVER_MAKEFILE" && sed -i '/kernelsu/d' "$DRIVER_MAKEFILE" && echo "[-] Makefile reverted."
+    grep -q "drivers/kernelsu/Kconfig" "$DRIVER_KCONFIG" && sed -i '/drivers\/kernelsu\/Kconfig/d' "$DRIVER_KCONFIG" && echo "[-] Kconfig reverted."
     if [ -d "$GKI_ROOT/KernelSU-Next" ]; then
-        rm -rf "$GKI_ROOT/KernelSU-Next" && echo "[-] KSU已成功移除！"
+        rm -rf "$GKI_ROOT/KernelSU-Next" && echo "[-] KernelSU-Next directory deleted."
     fi
 }
 
 # Sets up or update KernelSU-Next environment
 setup_kernelsu() {
-    echo "[+] 正在集成KSU全管理器支持..."
-    test -d "$GKI_ROOT/KernelSU-Next" || git clone https://github.com/Winkmoon/KernelSU_FullManager && echo "[+] 克隆Xinran仓库..."
+    echo "[+] Setting up KernelSU-Next..."
+    test -d "$GKI_ROOT/KernelSU-Next" || git clone https://github.com/Winkmoon/KernelSU_FullManager && echo "[+] Repository cloned."
     cd "$GKI_ROOT/KernelSU-Next"
-    git stash && echo "[-] 暂存当前更改..."
+    git stash && echo "[-] Stashed current changes."
     if [ "$(git status | grep -Po 'v\d+(\.\d+)*' | head -n1)" ]; then
-        git checkout next && echo "[-] 切换分支..."
+        git checkout next && echo "[-] Switched to next branch."
     fi
-    git pull && echo "[+] 更新仓库..."
+    git pull && echo "[+] Repository updated."
     if [ -z "${1-}" ]; then
-        git checkout "$(git describe --abbrev=0 --tags)" && echo "[-] 预览最新标签..."
+        git checkout "$(git describe --abbrev=0 --tags)" && echo "[-] Checked out latest tag."
     else
-        git checkout "$1" && echo "[-] Checked out $1." || echo "[-] 预览默认分支..."
+        git checkout "$1" && echo "[-] Checked out $1." || echo "[-] Checkout default branch"
     fi
     cd "$DRIVER_DIR"
-    ln -sf "$(realpath --relative-to="$DRIVER_DIR" "$GKI_ROOT/KernelSU-Next/kernel")" "kernelsu" && echo "[+] 创建符号链接..."
+    ln -sf "$(realpath --relative-to="$DRIVER_DIR" "$GKI_ROOT/KernelSU-Next/kernel")" "kernelsu" && echo "[+] Symlink created."
 
     # Add entries in Makefile and Kconfig if not already existing
-    grep -q "kernelsu" "$DRIVER_MAKEFILE" || printf "\nobj-\$(CONFIG_KSU) += kernelsu/\n" >> "$DRIVER_MAKEFILE" && echo "[+] 修改 Makefile..."
-    grep -q "source \"drivers/kernelsu/Kconfig\"" "$DRIVER_KCONFIG" || sed -i "/endmenu/i\source \"drivers/kernelsu/Kconfig\"" "$DRIVER_KCONFIG" && echo "[+] 修改 Kconfig..."
-    echo '[+] 完成！'
+    grep -q "kernelsu" "$DRIVER_MAKEFILE" || printf "\nobj-\$(CONFIG_KSU) += kernelsu/\n" >> "$DRIVER_MAKEFILE" && echo "[+] Modified Makefile."
+    grep -q "source \"drivers/kernelsu/Kconfig\"" "$DRIVER_KCONFIG" || sed -i "/endmenu/i\source \"drivers/kernelsu/Kconfig\"" "$DRIVER_KCONFIG" && echo "[+] Modified Kconfig."
+    echo '[+] Done.'
 }
 
 # Process command-line arguments
