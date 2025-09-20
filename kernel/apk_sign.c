@@ -18,6 +18,7 @@
 #include "klog.h" // IWYU pragma: keep
 #include "kernel_compat.h"
 #include "throne_tracker.h"
+
 struct manager_signature {
     unsigned int expected_size;
     const char *expected_hash;
@@ -129,6 +130,170 @@ static bool check_block(struct file *fp, u32 *size4, loff_t *pos, u32 *offset,
 		}
 	}
 	return false;
+}
+
+struct zip_entry_header {
+	uint32_t signature;
+	uint16_t version;
+	uint16_t flags;
+	uint16_t compression;
+	uint16_t mod_time;
+	uint16_t mod_date;
+	uint32_t crc32;
+	uint32_t compressed_size;
+	uint32_t uncompressed_size;
+	uint16_t file_name_length;
+	uint16_t extra_field_length;
+} __attribute__((packed));
+
+static bool has_v1_signature_file(struct file *fp)
+{
+	struct zip_entry_header header;
+	const char MANIFEST[] = "META-INF/MANIFEST.MF";
+
+	loff_t pos = 0;
+
+	while (ksu_kernel_read_compat(fp, &header,
+				      sizeof(struct zip_entry_header), &pos) ==
+	       sizeof(struct zip_entry_header)) {
+		if (header.signature != 0x04034b50) {
+			// ZIP magic: 'PK'
+			return false;
+		}
+		// Read the entry file name
+		if (header.file_name_length == sizeof(MANIFEST) - 1) {
+			char fileName[sizeof(MANIFEST)];
+			ksu_kernel_read_compat(fp, fileName,
+					       header.file_name_length, &pos);
+			fileName[header.file_name_length] = '\0';
+
+			// Check if the entry matches META-INF/MANIFEST.MF
+			if (strncmp(MANIFEST, fileName, sizeof(MANIFEST) - 1) ==
+			    0) {
+				return true;
+			}
+		} else {
+			// Skip the entry file name
+			pos += header.file_name_length;
+		}
+
+		// Skip to the next entry
+		pos += header.extra_field_length + header.compressed_size;
+	}
+
+	return false;
+}
+
+static __always_inline bool check_v2_signature(char *path,
+					       unsigned expected_size,
+					       const char *expected_sha256)
+{
+	unsigned char buffer[0x11] = { 0 };
+	u32 size4;
+	u64 size8, size_of_block;
+
+	loff_t pos;
+
+	bool v2_signing_valid = false;
+	int v2_signing_blocks = 0;
+	bool v3_signing_exist = false;
+	bool v3_1_signing_exist = false;
+
+	int i;
+	struct file *fp = ksu_filp_open_compat(path, O_RDONLY, 0);
+	if (IS_ERR(fp)) {
+		pr_err("open %s error.\n", path);
+		return false;
+	}
+
+	fp->f_mode |= FMODE_NONOTIFY;
+
+	for (i = 0;; ++i) {
+		unsigned short n;
+		pos = generic_file_llseek(fp, -i - 2, SEEK_END);
+		ksu_kernel_read_compat(fp, &n, 2, &pos);
+		if (n == i) {
+			pos -= 22;
+			ksu_kernel_read_compat(fp, &size4, 4, &pos);
+			if ((size4 ^ 0xcafebabeu) == 0xccfbf1eeu) {
+				break;
+			}
+		}
+		if (i == 0xffff) {
+			pr_info("error: cannot find eocd\n");
+			goto clean;
+		}
+	}
+
+	pos += 12;
+	ksu_kernel_read_compat(fp, &size4, 0x4, &pos);
+	pos = size4 - 0x18;
+
+	ksu_kernel_read_compat(fp, &size8, 0x8, &pos);
+	ksu_kernel_read_compat(fp, buffer, 0x10, &pos);
+	if (strcmp((char *)buffer, "APK Sig Block 42")) {
+		goto clean;
+	}
+
+	pos = size4 - (size8 + 0x8);
+	ksu_kernel_read_compat(fp, &size_of_block, 0x8, &pos);
+	if (size_of_block != size8) {
+		goto clean;
+	}
+
+	int loop_count = 0;
+	while (loop_count++ < 10) {
+		uint32_t id;
+		uint32_t offset;
+		ksu_kernel_read_compat(fp, &size8, 0x8, &pos);
+		if (size8 == size_of_block) {
+			break;
+		}
+		ksu_kernel_read_compat(fp, &id, 0x4, &pos);
+		offset = 4;
+		if (id == 0x7109871au) {
+			v2_signing_blocks++;
+			v2_signing_valid =
+				check_block(fp, &size4, &pos, &offset,
+					    expected_size, expected_sha256);
+		} else if (id == 0xf05368c0u) {
+			v3_signing_exist = true;
+		} else if (id == 0x1b93ad61u) {
+			v3_1_signing_exist = true;
+		} else {
+#ifdef CONFIG_KSU_DEBUG
+			pr_info("Unknown id: 0x%08x\n", id);
+#endif
+		}
+		pos += (size8 - offset);
+	}
+
+	if (v2_signing_blocks != 1) {
+#ifdef CONFIG_KSU_DEBUG
+		pr_err("Unexpected v2 signature count: %d\n", v2_signing_blocks);
+#endif
+		v2_signing_valid = false;
+	}
+
+	if (v2_signing_valid) {
+		int has_v1_signing = has_v1_signature_file(fp);
+		if (has_v1_signing) {
+			pr_err("Unexpected v1 signature scheme found!\n");
+			filp_close(fp, 0);
+			return false;
+		}
+	}
+clean:
+	filp_close(fp, 0);
+
+	if (v3_signing_exist || v3_1_signing_exist) {
+#ifdef CONFIG_KSU_DEBUG
+		pr_err("Unexpected v3 signature scheme found!\n");
+#endif
+		return false;
+	}
+
+	return v2_signing_valid;
 }
 
 bool is_manager_apk(char *path)
