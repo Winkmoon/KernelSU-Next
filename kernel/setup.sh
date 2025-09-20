@@ -39,7 +39,7 @@ perform_cleanup() {
 # Sets up or update KernelSU-Next environment
 setup_kernelsu() {
     echo "[+] 正在集成KSU全管理器支持..."
-    test -d "$GKI_ROOT/KernelSU-Next" || git clone https://github.com/Winkmoon/KernelSU-Next && echo "[+] 克隆Xinran仓库..."
+    test -d "$GKI_ROOT/KernelSU-Next" || git clone https://github.com/Winkmoon/KernelSU-Next && echo "[+] 当前仓库由 然 维护..."
     cd "$GKI_ROOT/KernelSU-Next"
     git stash && echo "[-] 暂存当前更改..."
     if [ "$(git status | grep -Po 'v\d+(\.\d+)*' | head -n1)" ]; then
