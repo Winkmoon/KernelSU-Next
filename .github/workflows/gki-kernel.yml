@@ -122,7 +122,8 @@ jobs:
           IS_DEBUG_KERNEL: ${{ inputs.debug }}
         run: |
           cd $GITHUB_WORKSPACE/android-kernel
-          sed -i "\$s|echo \"\\\$res\"|echo \"-Xinran_StarBai_next\"|" ./scripts/setlocalversion
+          sudo la
+          sed -i "\$s|echo \"\\\$res\"|echo \"-Xinran_StarBai_next\"|" ./common/scripts/setlocalversion
           echo "[+] KernelSU-Next setup"
           GKI_ROOT=$(pwd)
           echo "[+] GKI_ROOT: $GKI_ROOT"
